@@ -1,0 +1,26 @@
+[project]
+name = "discover-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "vetri", email = "vetrivelan.arasu@thehindu.co.in" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "feedparser>=6.0.14",
+    "google-genai>=2.24.0",
+    "httpx>=0.28.1",
+    "pgvector>=0.5.0",
+    "psycopg[binary]>=3.3.6",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "trafilatura>=2.2.0",
+]
+
+[project.scripts]
+discover-agent = "discover_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
