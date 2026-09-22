@@ -21,7 +21,7 @@ from tenacity import (
 
 MODEL = "gemini-3.8-flash"
 FALLBACK_MODEL = "gemini-3.7-flash"
-PROMPT_PATH = Path(__file__).parent / "prompts" / "rerank_v2.txt"
+PROMPT_PATH = Path(__file__).parent / "prompts" / "rerank_v3.txt"
 CANDIDATE_LIMIT = 15
 MAX_LINKS = 3
 MAX_MODEL_ATTEMPTS = 5
@@ -41,6 +41,11 @@ LinkType = Literal["same_story", "related", "explainer", "not_useful"]
 class CandidateAssessment(BaseModel):
     id: int
     classification: LinkType
+    usefulness: int = Field(
+        ge=1,
+        le=5,
+        description="Usefulness to a reader of the source article, from 1 to 5",
+    )
     reason: str = Field(min_length=1, description="A concise one-sentence reason")
 
 
@@ -60,6 +65,7 @@ class SuggestedLink(BaseModel):
     title: str
     similarity: float
     classification: LinkType
+    usefulness: int = Field(ge=1, le=5)
     reason: str
 
 
@@ -137,42 +143,37 @@ def validate_response(
         raise ValueError("Gemini did not assess every retrieved candidate")
 
 
-
 def select_links(classified: list[SuggestedLink]) -> list[SuggestedLink]:
     useful = [
         candidate
         for candidate in classified
-        if candidate.classification != "not_useful"
+        if candidate.classification != "not_useful" and candidate.usefulness >= 3
     ]
-    def ranking(candidate: SuggestedLink) -> tuple[float, int]:
-        return (-candidate.similarity, candidate.id)
 
-    slots: list[SuggestedLink | None] = []
-    selected_ids = set()
+    def ranking(candidate: SuggestedLink) -> tuple[int, float, int]:
+        return (-candidate.usefulness, -candidate.similarity, candidate.id)
 
-    for link_type in ("same_story", "related", "explainer"):
-        candidates = [
+    same_story = sorted(
+        (
             candidate
             for candidate in useful
-            if candidate.classification == link_type
-        ]
-        if candidates:
-            best = min(candidates, key=ranking)
-            slots.append(best)
-            selected_ids.add(best.id)
-        else:
-            slots.append(None)
-
-    remaining = iter(
-        candidate
-        for candidate in sorted(useful, key=ranking)
-        if candidate.id not in selected_ids
+            if candidate.classification == "same_story"
+        ),
+        key=ranking,
     )
-    for index, candidate in enumerate(slots):
-        if candidate is None:
-            slots[index] = next(remaining, None)
+    related_or_explainer = sorted(
+        (
+            candidate
+            for candidate in useful
+            if candidate.classification in ("related", "explainer")
+        ),
+        key=ranking,
+    )
 
-    return [candidate for candidate in slots if candidate is not None]
+    selected = same_story[:2]
+    if related_or_explainer:
+        selected.append(related_or_explainer[0])
+    return selected[:MAX_LINKS]
 
 
 def is_temporary_error(exc: BaseException) -> bool:
@@ -278,6 +279,7 @@ def rerank_article(
             title=candidate.title,
             similarity=candidate.similarity,
             classification=assessments[candidate.id].classification,
+            usefulness=assessments[candidate.id].usefulness,
             reason=assessments[candidate.id].reason,
         )
         for candidate in candidates
@@ -334,7 +336,8 @@ def main() -> None:
     for candidate in result.candidates:
         print(
             f"{candidate.similarity:.3f}  [{candidate.id}] {candidate.title} - "
-            f"{candidate.classification}: {candidate.reason}"
+            f"{candidate.classification}, usefulness {candidate.usefulness}: "
+            f"{candidate.reason}"
         )
 
     print("\nChosen links:")
@@ -343,7 +346,7 @@ def main() -> None:
     for index, link in enumerate(result.chosen, start=1):
         print(
             f"{index}. [{link.id}] {link.title} "
-            f"({link.classification}) - {link.reason}"
+            f"({link.classification}, usefulness {link.usefulness}) - {link.reason}"
         )
 
 
