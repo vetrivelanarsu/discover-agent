@@ -1,0 +1,17 @@
+{
+  "57": {
+    "should_link": [59, 58, 9],
+    "acceptable": [26, 15],
+    "should_reject": [43, 55, 49]
+  },
+  "55": {
+    "should_link": [1, 16, 2],
+    "acceptable": [43],
+    "should_reject": [56, 46, 30, 17]
+  },
+  "22": {
+    "should_link": [21],
+    "acceptable": [20],
+    "should_reject": [58, 59, 48]
+  }
+}
