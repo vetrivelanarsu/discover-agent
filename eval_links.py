@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 from pathlib import Path
@@ -7,7 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from pgvector.psycopg import register_vector
 
-from rerank import FALLBACK_MODEL, rerank_article, retrieve_candidates
+from rerank import MODEL, rerank_article, retrieve_candidates
 
 
 CASES_PATH = Path(__file__).parent / "eval" / "link_cases.json"
@@ -40,8 +41,16 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
 
 def main() -> None:
     load_dotenv()
+    parser = argparse.ArgumentParser(description="Evaluate internal link retrieval")
+    parser.add_argument(
+        "--model",
+        default=MODEL,
+        help=f"Gemini model to use (default: {MODEL})",
+    )
+    args = parser.parse_args()
+
     cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
-    totals: dict[tuple[str, str], dict[str, int]] = {}
+    totals: dict[tuple[str, str, str], dict[str, int]] = {}
     rows = []
 
     with (
@@ -54,18 +63,31 @@ def main() -> None:
             article_id = int(article_id_text)
             _, _, candidates = retrieve_candidates(conn, article_id)
             baseline_ids = [candidate.id for candidate in candidates[:3]]
-            reranked = rerank_article(conn, client, article_id)
+            reranked = rerank_article(
+                conn,
+                client,
+                article_id,
+                model=args.model,
+            )
             reranked_ids = [link.id for link in reranked.chosen]
-            reranker_model = reranked.model or "none"
-            if reranked.model == FALLBACK_MODEL:
-                reranker_model += " (FALLBACK)"
+            actual_model = reranked.model or "none"
+            if (
+                reranked.model is not None
+                and reranked.model != reranked.requested_model
+            ):
+                actual_model += " (FALLBACK)"
 
-            for method, model, chosen_ids in (
-                ("baseline", "similarity-only", baseline_ids),
-                ("reranker", reranker_model, reranked_ids),
+            for method, requested_model, result_model, chosen_ids in (
+                ("baseline", "n/a", "similarity-only", baseline_ids),
+                (
+                    "reranker",
+                    reranked.requested_model,
+                    actual_model,
+                    reranked_ids,
+                ),
             ):
                 result = score(chosen_ids, case)
-                total_key = (method, model)
+                total_key = (method, requested_model, result_model)
                 if total_key not in totals:
                     totals[total_key] = {metric: 0 for metric in METRICS}
                 for metric in METRICS:
@@ -74,7 +96,8 @@ def main() -> None:
                     [
                         article_id_text,
                         method,
-                        model,
+                        requested_model,
+                        result_model,
                         ", ".join(map(str, chosen_ids)) or "none",
                         *(str(result[metric]) for metric in METRICS),
                     ]
@@ -85,7 +108,8 @@ def main() -> None:
         [
             "Case",
             "Method",
-            "Model",
+            "Requested model",
+            "Actual model",
             "Chosen ids",
             "Should",
             "Acceptable",
@@ -96,12 +120,25 @@ def main() -> None:
     )
 
     total_rows = [
-        [method, model, *(str(results[metric]) for metric in METRICS)]
-        for (method, model), results in totals.items()
+        [
+            method,
+            requested_model,
+            result_model,
+            *(str(results[metric]) for metric in METRICS),
+        ]
+        for (method, requested_model, result_model), results in totals.items()
     ]
     print("\nTotals")
     print_table(
-        ["Method", "Model", "Should", "Acceptable", "Reject", "Missed"],
+        [
+            "Method",
+            "Requested model",
+            "Actual model",
+            "Should",
+            "Acceptable",
+            "Reject",
+            "Missed",
+        ],
         total_rows,
     )
 

@@ -1,6 +1,6 @@
+import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Literal
 
@@ -21,7 +21,7 @@ from tenacity import (
 
 MODEL = "gemini-3.8-flash"
 FALLBACK_MODEL = "gemini-3.7-flash"
-PROMPT_PATH = Path(__file__).parent / "prompts" / "rerank_v1.txt"
+PROMPT_PATH = Path(__file__).parent / "prompts" / "rerank_v2.txt"
 CANDIDATE_LIMIT = 15
 MAX_LINKS = 3
 MAX_MODEL_ATTEMPTS = 5
@@ -46,7 +46,6 @@ class CandidateAssessment(BaseModel):
 
 class RerankResponse(BaseModel):
     assessments: list[CandidateAssessment]
-    chosen_ids: list[int] = Field(max_length=MAX_LINKS)
 
 
 class RetrievedCandidate(BaseModel):
@@ -65,6 +64,7 @@ class SuggestedLink(BaseModel):
 
 
 class RerankResult(BaseModel):
+    requested_model: str
     model: str | None
     candidates: list[SuggestedLink]
     chosen: list[SuggestedLink]
@@ -136,17 +136,43 @@ def validate_response(
     if set(assessment_ids) != candidate_ids:
         raise ValueError("Gemini did not assess every retrieved candidate")
 
-    if len(response.chosen_ids) != len(set(response.chosen_ids)):
-        raise ValueError("Gemini chose the same candidate more than once")
-    if not set(response.chosen_ids).issubset(candidate_ids):
-        raise ValueError("Gemini chose an id outside the retrieved candidates")
 
-    assessments = {assessment.id: assessment for assessment in response.assessments}
-    if any(
-        assessments[candidate_id].classification == "not_useful"
-        for candidate_id in response.chosen_ids
-    ):
-        raise ValueError("Gemini chose a candidate classified as not_useful")
+
+def select_links(classified: list[SuggestedLink]) -> list[SuggestedLink]:
+    useful = [
+        candidate
+        for candidate in classified
+        if candidate.classification != "not_useful"
+    ]
+    def ranking(candidate: SuggestedLink) -> tuple[float, int]:
+        return (-candidate.similarity, candidate.id)
+
+    slots: list[SuggestedLink | None] = []
+    selected_ids = set()
+
+    for link_type in ("same_story", "related", "explainer"):
+        candidates = [
+            candidate
+            for candidate in useful
+            if candidate.classification == link_type
+        ]
+        if candidates:
+            best = min(candidates, key=ranking)
+            slots.append(best)
+            selected_ids.add(best.id)
+        else:
+            slots.append(None)
+
+    remaining = iter(
+        candidate
+        for candidate in sorted(useful, key=ranking)
+        if candidate.id not in selected_ids
+    )
+    for index, candidate in enumerate(slots):
+        if candidate is None:
+            slots[index] = next(remaining, None)
+
+    return [candidate for candidate in slots if candidate is not None]
 
 
 def is_temporary_error(exc: BaseException) -> bool:
@@ -204,21 +230,32 @@ def generate_response_with_retry(
 
 
 def rerank_article(
-    conn: psycopg.Connection, client: genai.Client, article_id: int
+    conn: psycopg.Connection,
+    client: genai.Client,
+    article_id: int,
+    model: str = MODEL,
 ) -> RerankResult:
     source_title, source_body, candidates = retrieve_candidates(conn, article_id)
     if not candidates:
-        return RerankResult(model=None, candidates=[], chosen=[])
+        return RerankResult(
+            requested_model=model,
+            model=None,
+            candidates=[],
+            chosen=[],
+        )
 
     prompt = build_prompt(source_title, source_body, candidates)
     try:
-        response = generate_response_with_retry(client, MODEL, prompt)
-        result_model = MODEL
+        response = generate_response_with_retry(client, model, prompt)
+        result_model = model
     except errors.APIError as exc:
-        if (exc.code, exc.status) != (503, "UNAVAILABLE"):
+        if (
+            (exc.code, exc.status) != (503, "UNAVAILABLE")
+            or model == FALLBACK_MODEL
+        ):
             raise
         print(
-            f"{MODEL} remained unavailable after {MAX_MODEL_ATTEMPTS} attempts; "
+            f"{model} remained unavailable after {MAX_MODEL_ATTEMPTS} attempts; "
             f"trying fallback {FALLBACK_MODEL} once",
             flush=True,
         )
@@ -235,7 +272,6 @@ def rerank_article(
     validate_response(parsed, candidates)
 
     assessments = {assessment.id: assessment for assessment in parsed.assessments}
-    candidate_by_id = {candidate.id: candidate for candidate in candidates}
     classified = [
         SuggestedLink(
             id=candidate.id,
@@ -246,37 +282,33 @@ def rerank_article(
         )
         for candidate in candidates
     ]
-    chosen = [
-        SuggestedLink(
-            id=candidate_id,
-            title=candidate_by_id[candidate_id].title,
-            similarity=candidate_by_id[candidate_id].similarity,
-            classification=assessments[candidate_id].classification,
-            reason=assessments[candidate_id].reason,
-        )
-        for candidate_id in parsed.chosen_ids
-    ]
-    return RerankResult(model=result_model, candidates=classified, chosen=chosen)
+    return RerankResult(
+        requested_model=model,
+        model=result_model,
+        candidates=classified,
+        chosen=select_links(classified),
+    )
 
 
 def suggest_links(
-    conn: psycopg.Connection, client: genai.Client, article_id: int
+    conn: psycopg.Connection,
+    client: genai.Client,
+    article_id: int,
+    model: str = MODEL,
 ) -> list[SuggestedLink]:
-    return rerank_article(conn, client, article_id).chosen
+    return rerank_article(conn, client, article_id, model=model).chosen
 
 
 def main() -> None:
     load_dotenv()
-
-    if len(sys.argv) != 2:
-        print("Usage: uv run rerank.py <article_id>")
-        return
-
-    try:
-        article_id = int(sys.argv[1])
-    except ValueError:
-        print("article_id must be an integer")
-        return
+    parser = argparse.ArgumentParser(description="Suggest internal article links")
+    parser.add_argument("article_id", type=int)
+    parser.add_argument(
+        "--model",
+        default=MODEL,
+        help=f"Gemini model to use (default: {MODEL})",
+    )
+    args = parser.parse_args()
 
     with (
         psycopg.connect(os.environ["DATABASE_URL"]) as conn,
@@ -284,14 +316,19 @@ def main() -> None:
     ):
         register_vector(conn)
         try:
-            result = rerank_article(conn, client, article_id)
+            result = rerank_article(conn, client, args.article_id, model=args.model)
         except ValueError as exc:
             print(exc)
             return
 
-    model_label = result.model or "none (no candidates)"
-    fallback_label = " (FALLBACK)" if result.model == FALLBACK_MODEL else ""
-    print(f"\nModel: {model_label}{fallback_label}")
+    actual_model = result.model or "none (no candidates)"
+    fallback_label = (
+        " (FALLBACK)"
+        if result.model is not None and result.model != result.requested_model
+        else ""
+    )
+    print(f"\nRequested model: {result.requested_model}")
+    print(f"Actual model: {actual_model}{fallback_label}")
 
     print("\nCandidate classifications:")
     for candidate in result.candidates:
