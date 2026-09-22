@@ -15,11 +15,21 @@ FEED_URL = "https://feeds.bbci.co.uk/news/business/rss.xml"
 USER_AGENT = "discover-agent/0.1 (personal learning project)"
 SKIPPED_PATHS = ("/videos/", "/live/", "/sounds/", "/programmes/")
 MIN_BODY_LENGTH = 500
+FOOTER_MARKERS = ("Get in touch", "Related topics")
 
 
 def clean_url(url: str) -> str:
     parts = urlsplit(url)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def clean_body(body: str) -> str:
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() in FOOTER_MARKERS and i > len(lines) * 0.6:
+            lines = lines[:i]
+            break
+    return "\n".join(lines).strip()
 
 
 def published_at(entry: feedparser.FeedParserDict) -> datetime | None:
@@ -84,9 +94,11 @@ def main() -> None:
                 response.raise_for_status()
 
                 body = trafilatura.extract(response.text)
-                if body is None or len(body.strip()) < MIN_BODY_LENGTH:
+                if body is not None:
+                    body = clean_body(body)
+                if body is None or len(body) < MIN_BODY_LENGTH:
                     counts["TOO SHORT"] += 1
-                    body_length = len(body.strip()) if body else 0
+                    body_length = len(body) if body else 0
                     print_result("TOO SHORT", title, f"{body_length} characters")
                     continue
 
@@ -106,7 +118,7 @@ def main() -> None:
                         "Business",
                         author,
                         published_at(entry),
-                        body.strip(),
+                        body,
                     ),
                 )
 
@@ -120,6 +132,31 @@ def main() -> None:
         "Summary: " + ", ".join(f"{status}={count}" for status, count in counts.items())
     )
 
+
+def remove_callouts(lines: list[str]) -> list[str]:
+    cleaned = []
+    skip_next = False
+    for i, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        if line.strip() == "Get in touch":
+            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if next_line.endswith("?"):
+                skip_next = True
+            continue
+        cleaned.append(line)
+    return cleaned
+
+
+def clean_body(body: str) -> str:
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() in FOOTER_MARKERS and i > len(lines) * 0.6:
+            lines = lines[:i]
+            break
+    lines = remove_callouts(lines)
+    return "\n".join(lines).strip()
 
 if __name__ == "__main__":
     main()
