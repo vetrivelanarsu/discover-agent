@@ -353,6 +353,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "tenacity" },
     { name = "trafilatura" },
 ]
 
@@ -365,6 +366,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "trafilatura", specifier = ">=2.2.0" },
 ]
 
