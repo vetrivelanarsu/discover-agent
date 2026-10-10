@@ -3,6 +3,8 @@
 Personal learning project: a multi agent system that suggests headlines, tags,
 and internal links for news articles. Built to learn AI engineering end to end.
 
+Read PLAN.md for the task list and current status. Mark tasks done as they finish.
+
 ## Stack
 - Python 3.12, managed with uv. Run scripts with `uv run <file>`.
 - Postgres with pgvector on Supabase. Connection string in DATABASE_URL in .env.
