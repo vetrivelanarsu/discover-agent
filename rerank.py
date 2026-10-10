@@ -25,6 +25,8 @@ PROMPT_PATH = Path(__file__).parent / "prompts" / "rerank_v3.txt"
 CANDIDATE_LIMIT = 15
 MAX_LINKS = 3
 MAX_MODEL_ATTEMPTS = 5
+MIN_USEFULNESS_SAME_STORY = 3
+MIN_USEFULNESS_OTHER = 3
 
 CANDIDATE_QUERY = """
     select id, title, body, 1 - (embedding <=> %s) as similarity
@@ -144,10 +146,16 @@ def validate_response(
 
 
 def select_links(classified: list[SuggestedLink]) -> list[SuggestedLink]:
+    def usefulness_floor(candidate: SuggestedLink) -> int:
+        if candidate.classification == "same_story":
+            return MIN_USEFULNESS_SAME_STORY
+        return MIN_USEFULNESS_OTHER
+
     useful = [
         candidate
         for candidate in classified
-        if candidate.classification != "not_useful" and candidate.usefulness >= 3
+        if candidate.classification != "not_useful"
+        and candidate.usefulness >= usefulness_floor(candidate)
     ]
 
     def ranking(candidate: SuggestedLink) -> tuple[int, float, int]:
@@ -298,7 +306,10 @@ def suggest_links(
     article_id: int,
     model: str = MODEL,
 ) -> list[SuggestedLink]:
-    return rerank_article(conn, client, article_id, model=model).chosen
+    chosen = rerank_article(conn, client, article_id, model=model).chosen
+    if not chosen:
+        print("No suitable links found")
+    return chosen
 
 
 def main() -> None:
@@ -342,7 +353,7 @@ def main() -> None:
 
     print("\nChosen links:")
     if not result.chosen:
-        print("None")
+        print("No suitable links found")
     for index, link in enumerate(result.chosen, start=1):
         print(
             f"{index}. [{link.id}] {link.title} "

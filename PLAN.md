@@ -20,8 +20,11 @@ mark them done as they finish and record relevant decisions or results here.
   set. Record the reasoning behind the decision.
 - [ ] **2. Grow the golden set.** Expand it from 3 cases to about 10, using the
   newer articles in the corpus.
-- [ ] **3. Define when to return no links.** Decide a clear rule for when the
+- [x] **3. Define when to return no links.** Decide a clear rule for when the
   Link Researcher should return no links at all.
+  Result: implemented floors of same_story usefulness >= 3 and related/explainer
+  usefulness >= 4; return no links instead of padding below those floors. Eval
+  note: case 22 should-link article 21 dropped from 3/3 before to 1/3 after.
 
 ## Build the other agents
 
